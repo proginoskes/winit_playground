@@ -1,4 +1,6 @@
 
+use std::time::Duration;
+
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -7,7 +9,7 @@ use winit::{
 };
 use pixels::{Pixels, SurfaceTexture};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 enum CellState {
     Live,
     Dead
@@ -23,7 +25,8 @@ struct Habitat {
     y : u32,
     size: u32,
     idx: usize,
-    cellmap : Vec<Cell>
+    cellmap : Vec<Cell>,
+    cellmap_buffer: Vec<Cell>
 }
 
 impl Habitat {
@@ -34,22 +37,92 @@ impl Habitat {
         return paint_x < self.x + self.size && paint_x >= self.x 
             && paint_y < self.y + self.size && paint_y >= self.y
     }
+    fn run_life_round(& mut self){
+        /*
+         * 0 0 0
+         * 0 i 0
+         * 0 0 0
+         */
+
+        let is_on_end = self.idx % self.size as usize == self.size as usize-1;
+        let is_on_start = self.idx % self.size as usize == 0;
+        let is_at_top = self.idx < self.size as usize;
+        let is_at_bottom = self.idx >= self.size.pow(2) as usize-self.size as usize;
+
+        let mut neighbors : Vec<usize> = Vec::new();
+
+        if !is_on_end {
+            neighbors.push(self.idx+1); // i 0
+        }
+
+        if !is_on_start {
+            neighbors.push(self.idx-1); // 0 i
+        }
+
+        if !is_at_top {
+            neighbors.push(self.idx-self.size as usize);
+        }
+
+        if !is_at_bottom {
+            neighbors.push(self.idx+self.size as usize);
+        }
+
+        if !is_on_end&&!is_at_top {
+            neighbors.push(self.idx - self.size as usize + 1);
+        }
+
+        if !is_on_start && !is_at_top {
+            neighbors.push(self.idx - self.size as usize - 1);
+        }
+
+        if !is_on_end && !is_at_bottom {
+            neighbors.push(self.idx + self.size as usize + 1);
+        }
+
+        if !is_on_start && !is_at_bottom {
+            neighbors.push(self.idx + self.size as usize - 1);
+        }
+
+        let mut live_counter = 0;
+        for n in neighbors {
+            if self.cellmap[n].state==CellState::Live {
+                live_counter+=1;
+            }
+        }
+
+        self.cellmap_buffer[self.idx].state = if self.cellmap[self.idx].state==CellState::Live {
+            if live_counter < 2 || live_counter > 3 {
+                    CellState::Dead
+                } else {
+                    CellState::Live
+                }
+        } else {
+            if live_counter == 3 {
+                CellState::Live
+            } else {
+                CellState::Dead
+            }
+        }
+        
+
+    }
     fn next_cell(& mut self)->Cell{
         let a = self.cellmap[self.idx];
-        self.idx = (self.idx + 1)%self.size.pow(2) as usize;
+        self.run_life_round();
+        self.idx = (self.idx + 1)%self.cellmap.len() as usize;
         a
     }
     fn new(x: u32, y: u32, size: u32) -> Self{
         let mut cmap = Vec::with_capacity((size*size) as usize);
         for i in 0..(size*size) {
-            cmap.push(Cell{state: if i % 255 != 0 {
+            cmap.push(Cell{state: if i % 256 != 0 {
                     CellState::Live
                 } else {
                     CellState::Dead
                 }
             });
         }
-        Habitat{x,y,size,idx:0,cellmap:cmap}
+        Habitat{x,y,size,idx:0,cellmap:cmap.clone(), cellmap_buffer:cmap.clone()}
     }
 }
 
@@ -59,7 +132,7 @@ fn main () {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
     let size = window.inner_size();
-    let mut hab = Habitat::new(16, 16, 512);
+    let mut hab = Habitat::new(16, 16, 256);
     let surface_texture = SurfaceTexture::new(size.width,size.height,&window);
     let mut frame_buf = match Pixels::new(size.width,size.height, surface_texture) {
         Ok(res)=>res,
@@ -68,7 +141,8 @@ fn main () {
 
     event_loop.run(move |event, _, control_flow| {
         control_flow.set_poll();
-        control_flow.set_wait();
+        control_flow.set_wait_timeout(Duration::from_millis(10));
+
 
         match event {
             Event::MainEventsCleared => {
@@ -87,6 +161,7 @@ fn main () {
                     };
                     pixel.copy_from_slice(&rgba);
                 }
+                hab.cellmap = hab.cellmap_buffer.clone();
                 if let Err(err) = frame_buf.render() {
                     println!("RenderError: {err}");
                     control_flow.set_exit();
