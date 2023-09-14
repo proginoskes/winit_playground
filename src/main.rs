@@ -1,5 +1,9 @@
 
-use std::time::Duration;
+use std::{
+    fmt::Debug,
+    time::Duration,
+    fs::{self, File}, mem::{swap, replace}
+};
 
 use winit::{
     event::{Event, WindowEvent},
@@ -8,6 +12,9 @@ use winit::{
     dpi::PhysicalSize
 };
 use pixels::{Pixels, SurfaceTexture};
+use clap::Parser;
+
+use serde::{Serialize, Deserialize};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum CellState {
@@ -17,7 +24,15 @@ enum CellState {
 
 #[derive(Copy, Clone)]
 struct Cell {
-    state : CellState
+    state : CellState,
+    buffer: CellState
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct HabitatJSON {
+   size : usize,
+   rules: (Vec<usize>,Vec<usize>),
+   cells : Vec<(usize, usize)>
 }
 
 struct Habitat {
@@ -25,8 +40,9 @@ struct Habitat {
     y : u32,
     size: u32,
     idx: usize,
+    birth: Vec<bool>,
+    survival: Vec<bool>,
     cellmap : Vec<Cell>,
-    cellmap_buffer: Vec<Cell>
 }
 
 impl Habitat {
@@ -44,67 +60,62 @@ impl Habitat {
          * 0 0 0
          */
 
+        
         let is_on_end = self.idx % self.size as usize == self.size as usize-1;
         let is_on_start = self.idx % self.size as usize == 0;
         let is_at_top = self.idx < self.size as usize;
         let is_at_bottom = self.idx >= self.size.pow(2) as usize-self.size as usize;
-
-        let mut neighbors : Vec<usize> = Vec::new();
-
-        if !is_on_end {
-            neighbors.push(self.idx+1); // i 0
-        }
-
-        if !is_on_start {
-            neighbors.push(self.idx-1); // 0 i
-        }
-
-        if !is_at_top {
-            neighbors.push(self.idx-self.size as usize);
-        }
-
-        if !is_at_bottom {
-            neighbors.push(self.idx+self.size as usize);
-        }
-
-        if !is_on_end&&!is_at_top {
-            neighbors.push(self.idx - self.size as usize + 1);
-        }
-
-        if !is_on_start && !is_at_top {
-            neighbors.push(self.idx - self.size as usize - 1);
-        }
-
-        if !is_on_end && !is_at_bottom {
-            neighbors.push(self.idx + self.size as usize + 1);
-        }
-
-        if !is_on_start && !is_at_bottom {
-            neighbors.push(self.idx + self.size as usize - 1);
-        }
-
-        let mut live_counter = 0;
-        for n in neighbors {
-            if self.cellmap[n].state==CellState::Live {
-                live_counter+=1;
-            }
-        }
-
-        self.cellmap_buffer[self.idx].state = if self.cellmap[self.idx].state==CellState::Live {
-            if live_counter < 2 || live_counter > 3 {
-                    CellState::Dead
-                } else {
-                    CellState::Live
-                }
-        } else {
-            if live_counter == 3 {
-                CellState::Live
-            } else {
-                CellState::Dead
-            }
-        }
+         
         
+        let live_counter = match is_on_end {
+            true => 0,
+            false => ( match is_at_top {
+                true => 0,
+                false => if self.cellmap[self.idx - self.size as usize + 1].state 
+                    == CellState::Live {1}else{0}
+            }) + (match is_at_bottom {
+                true => 0,
+                false => if self.cellmap[self.idx + self.size as usize + 1].state 
+                    == CellState::Live {1}else{0} 
+            }) + if self.cellmap[self.idx+1].state == CellState::Live {1}else{0}
+        } + (match is_on_start {
+            true => 0,
+            false => (match is_at_top {
+                true => 0,
+                false => if self.cellmap[self.idx - self.size as usize - 1].state 
+                    == CellState::Live {1}else{0}
+            }) + (match is_at_bottom {
+                true => 0,
+                false => if self.cellmap[self.idx + self.size as usize - 1].state 
+                    == CellState::Live {1}else{0} 
+            }) + if self.cellmap[self.idx-1].state == CellState::Live{1}else{0}
+        }) + (match is_at_top {
+            true => 0,
+            false => if self.cellmap[self.idx-self.size as usize].state 
+                == CellState::Live{1}else{0}
+        }) + (match is_at_bottom {
+            true => 0,
+            false => if self.cellmap[self.idx + self.size as usize].state
+                == CellState::Live{1}else{0}
+        });
 
+        self.cellmap[self.idx].buffer = match self.cellmap[self.idx].state{
+            CellState::Live=> match self.survival[live_counter]{
+                true=>CellState::Live,
+                false=>CellState::Dead
+            },
+            CellState::Dead=> match self.birth[live_counter]{
+                true=>CellState::Live,
+                false=>CellState::Dead
+            }
+        };       
+        
+    }
+    fn flip_cells(&mut self) {
+        self.cellmap = self.cellmap.iter_mut().map(|c| {
+            c.state = c.buffer;
+            *c
+        }).collect();
     }
     fn next_cell(& mut self)->Cell{
         let a = self.cellmap[self.idx];
@@ -112,27 +123,92 @@ impl Habitat {
         self.idx = (self.idx + 1)%self.cellmap.len() as usize;
         a
     }
-    fn new(x: u32, y: u32, size: u32) -> Self{
+    fn new(
+        x: u32, y: u32, size: u32, 
+        cell_pairs : Vec<(usize,usize)>,
+        birth_indices:Vec<usize>, survival_indices:Vec<usize>
+    ) -> Self{
         let mut cmap = Vec::with_capacity((size*size) as usize);
-        for i in 0..(size*size) {
-            cmap.push(Cell{state: if i % 256 != 0 {
-                    CellState::Live
-                } else {
-                    CellState::Dead
-                }
-            });
+        for _i in 0..(size*size) {
+            cmap.push(Cell{state:CellState::Dead, buffer:CellState::Dead});
         }
-        Habitat{x,y,size,idx:0,cellmap:cmap.clone(), cellmap_buffer:cmap.clone()}
+ 
+        for c in cell_pairs {
+            cmap[(size as usize*c.0)+c.1].state=CellState::Live;
+        }
+
+        let mut birth = Vec::new();
+        birth.resize(9,false);
+        let mut survival = Vec::new();
+        survival.resize(9,false);
+        
+        for i in birth_indices {
+            birth[i]=true;
+        }
+        for i in survival_indices {
+            survival[i]=true;
+        }
+
+        Habitat{
+            x,
+            y,
+            size,
+            idx:0,
+            cellmap:cmap.clone(), 
+            birth,
+            survival
+        }
     }
 }
 
-
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(long, short)]
+    file: String
+}
 
 fn main () {
+    let args = Args::parse();
+
+    let data = match fs::read_to_string(args.file) {
+        Ok(s)=>s,
+        Err(_)=>panic!("could not read file")
+    };
+
+    /*
+    let data = r#"{
+        "size":512,
+        "birth":[3],
+        "survival":[2,3,4],
+        "cells":[[100,100],[99,101],[98,99],[98,100],[98,101]]
+    }"#;
+    */
+
+    let hab_json : HabitatJSON = 
+        match serde_json::from_str(&data){
+            Ok(h)=>h,
+            Err(d)=>{dbg!(d);panic!("could not deserialize")}
+        };
+
+
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
     let size = window.inner_size();
-    let mut hab = Habitat::new(16, 16, 256);
+
+    let mut cell_locations : Vec<(usize,usize)> = Vec::new();
+ 
+    for c in hab_json.cells {
+        cell_locations.push(c);
+    }
+
+    let mut hab = Habitat::new(
+        16, 16,
+        hab_json.size as u32, 
+        cell_locations, 
+        hab_json.rules.0, 
+        hab_json.rules.1
+    );
     let surface_texture = SurfaceTexture::new(size.width,size.height,&window);
     let mut frame_buf = match Pixels::new(size.width,size.height, surface_texture) {
         Ok(res)=>res,
@@ -141,8 +217,7 @@ fn main () {
 
     event_loop.run(move |event, _, control_flow| {
         control_flow.set_poll();
-        control_flow.set_wait_timeout(Duration::from_millis(10));
-
+        control_flow.set_wait_timeout(Duration::from_millis(5));
 
         match event {
             Event::MainEventsCleared => {
@@ -161,7 +236,7 @@ fn main () {
                     };
                     pixel.copy_from_slice(&rgba);
                 }
-                hab.cellmap = hab.cellmap_buffer.clone();
+                hab.flip_cells();
                 if let Err(err) = frame_buf.render() {
                     println!("RenderError: {err}");
                     control_flow.set_exit();
