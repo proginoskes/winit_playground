@@ -2,7 +2,7 @@
 use std::{
     fmt::Debug,
     time::Duration,
-    fs::{self, File}, mem::{swap, replace}
+    fs
 };
 
 use winit::{
@@ -36,8 +36,6 @@ struct HabitatJSON {
 }
 
 struct Habitat {
-    x : u32,
-    y : u32,
     size: u32,
     idx: usize,
     birth: Vec<bool>,
@@ -50,8 +48,8 @@ impl Habitat {
         let paint_x = (i%wind_size.width as usize) as u32;
         let paint_y = (i/wind_size.width as usize) as u32;
 
-        return paint_x < self.x + self.size && paint_x >= self.x 
-            && paint_y < self.y + self.size && paint_y >= self.y
+        return paint_x < self.size  
+            && paint_y < self.size   
     }
     fn run_life_round(& mut self){
         /*
@@ -124,7 +122,7 @@ impl Habitat {
         a
     }
     fn new(
-        x: u32, y: u32, size: u32, 
+        size: u32, 
         cell_pairs : Vec<(usize,usize)>,
         birth_indices:Vec<usize>, survival_indices:Vec<usize>
     ) -> Self{
@@ -150,8 +148,6 @@ impl Habitat {
         }
 
         Habitat{
-            x,
-            y,
             size,
             idx:0,
             cellmap:cmap.clone(), 
@@ -203,7 +199,6 @@ fn main () {
     }
 
     let mut hab = Habitat::new(
-        16, 16,
         hab_json.size as u32, 
         cell_locations, 
         hab_json.rules.0, 
